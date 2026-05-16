@@ -10,12 +10,10 @@ import os
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# =====================================================================
-# 1. ARCHITETTURA CON SCHEDULED SAMPLING (TEACHER FORCING)
-# =====================================================================
-class RobustFreeRunNNARX(nn.Module):
+# Architettura NNARX con Scheduled Sampling per diminuire l'accumulo di errore durante la fase di training
+class NNARX(nn.Module):
     def __init__(self, input_dim_u, input_dim_y, hidden_dim, output_dim):
-        super(RobustFreeRunNNARX, self).__init__()
+        super(NNARX, self).__init__()
         self.gru_cell = nn.GRUCell(input_dim_u + input_dim_y, hidden_dim)
         self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.relu = nn.ReLU()
@@ -29,24 +27,23 @@ class RobustFreeRunNNARX(nn.Module):
 
         for t in range(seq_len):
             u_t = u_seq[:, t, :]
-            # Concatena comandi motori e posizione (vera o predetta)
+            # Concateniamo l'ingresso esogeno (motore U) con lo stato autoregressivo corrente (posizione Y) per il NNARX
             nnarx_input = torch.cat([u_t, current_y], dim=1)
             
             h = self.gru_cell(nnarx_input, h)
             hidden_features = self.relu(self.fc1(h))
             pred_y = self.fc2(hidden_features)
             predictions.append(pred_y.unsqueeze(1))
-
-            # --- LA MAGIA DELLO SCHEDULED SAMPLING ---
-            # Tiriamo i dadi: usiamo la verità o la previsione per il prossimo passo?
+            # riceve un aiuto con la vera posizione
             if y_true_seq is not None and torch.rand(1).item() < teacher_forcing_ratio:
-                current_y = y_true_seq[:, t, :]  # 🛟 Salvagente: usa la verità
+                current_y = y_true_seq[:, t, :] 
             else:
-                current_y = pred_y               # 🚴‍♂️ Free-Run: usa la previsione
+                #si adatta da sola se è maggiore della soglia
+                current_y = pred_y               
                 
         return torch.cat(predictions, dim=1)
 
-class SimulationRolloutDataset(Dataset):
+class Dataset(Dataset):
     def __init__(self, X, Y, seq_len):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.Y = torch.tensor(Y, dtype=torch.float32)
@@ -92,15 +89,13 @@ def calculate_metrics(y_true, y_pred):
     bfr = 100 * (1 - np.sqrt(ss_res) / np.sqrt(ss_tot))
     return nrmse, r2, bfr
 
-# =====================================================================
-# 2. ADDESTRAMENTO CON SCHEDULED SAMPLING
-# =====================================================================
+
 if __name__ == "__main__":
-    TASK = 'INVERSE' #or INVERSE    
+    TASK = 'INVERSE' #FORWARD o INVERSE    
     SEQ_LEN = 120
     BATCH_SIZE = 128
     HIDDEN_DIM = 64      
-    LR = 0.002           # Leggermente abbassato per evitare esplosioni
+    LR = 0.002
     EPOCHS = 200         
     PATIENCE = 40        
     NUM_RESTARTS = 5     
@@ -110,7 +105,6 @@ if __name__ == "__main__":
     PATH_INVERSE = '/kaggle/input/datasets/contemarco/forwardandinverse/inverse_identification_without_raw_data.mat'
     FINAL_MODEL_PATH = f"/kaggle/working/BEST_ROBUST_FREERUN_{TASK}.pth"
 
-    print("Caricamento Dati...")
     if TASK == 'FORWARD': 
         mat_data = sio.loadmat(PATH_FORWARD)
     else:
@@ -123,24 +117,25 @@ if __name__ == "__main__":
     std_X[std_X == 0] = 1e-8
     mean_Y, std_Y = np.mean(Y_train, axis=0), np.std(Y_train, axis=0)
     std_Y[std_Y == 0] = 1e-8
-
+    
+    #Normalizzazione
     X_train_norm, X_test_norm = (X_train - mean_X) / std_X, (X_test - mean_X) / std_X
     Y_train_norm, Y_test_norm = (Y_train - mean_Y) / std_Y, (Y_test - mean_Y) / std_Y
 
-    train_loader = DataLoader(SimulationRolloutDataset(X_train_norm, Y_train_norm, SEQ_LEN), batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(SimulationRolloutDataset(X_test_norm, Y_test_norm, SEQ_LEN), batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(Dataset(X_train_norm, Y_train_norm, SEQ_LEN), batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(Dataset(X_test_norm, Y_test_norm, SEQ_LEN), batch_size=BATCH_SIZE, shuffle=False)
 
     best_overall_val_loss = float('inf')
     best_run_idx = -1
     best_train_history, best_val_history = [], []
     best_stopping_epoch = 0
 
-    print(f"\n--- Inizio Addestramento Free-Run Robusto ({NUM_RESTARTS} Run) ---")
+    print(f"Inizio Addestramento ({NUM_RESTARTS} Run)")
     start_total_time = time.time()
     
     for run in range(NUM_RESTARTS):
         run_start = time.time()
-        model = RobustFreeRunNNARX(input_dim_u=dim_u, input_dim_y=6, hidden_dim=HIDDEN_DIM, output_dim=6).to(DEVICE)
+        model = NNARX(input_dim_u=dim_u, input_dim_y=6, hidden_dim=HIDDEN_DIM, output_dim=6).to(DEVICE)
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
         criterion = nn.MSELoss()
         
@@ -153,8 +148,7 @@ if __name__ == "__main__":
             model.train()
             epoch_train_loss = 0.0
             
-            # Calcolo decrescente del Teacher Forcing. 
-            # Va da 1.0 (100% aiuto) a 0.0 (0% aiuto) entro il 70% delle epoche totali
+            # Calcolo decrescente del Teacher Forcing (diminuisce entro il 70% delle epoche totali)
             tf_ratio = max(0.0, 1.0 - (epoch / (EPOCHS * 0.3)))
             
             for u_seq, y_init, y_target_seq in train_loader:
@@ -167,7 +161,6 @@ if __name__ == "__main__":
                 loss = criterion(preds_seq, y_target_seq)
                 loss.backward()
                 
-                # Freno a mano anti-esplosione dei gradienti
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 
@@ -176,14 +169,13 @@ if __name__ == "__main__":
             avg_train_loss = epoch_train_loss / len(train_loader)
             current_train_history.append(avg_train_loss)
             
-            # --- VALIDATION (Sempre e solo in Free-Run puro, tf_ratio=0.0) ---
+            #VALIDATION
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
                 for u_seq_val, y_init_val, y_target_seq_val in val_loader:
                     u_seq_val, y_init_val, y_target_seq_val = u_seq_val.to(DEVICE), y_init_val.to(DEVICE), y_target_seq_val.to(DEVICE)
                     
-                    # Nel test non ci sono aiuti!
                     preds_seq_val = model(u_seq_val, y_init_val, teacher_forcing_ratio=0.0)
                     val_loss += criterion(preds_seq_val, y_target_seq_val).item()
             
@@ -202,16 +194,10 @@ if __name__ == "__main__":
             best_stopping_epoch = len(current_val_history) - early_stopping.counter - 1
             
         if os.path.exists(temp_path): os.remove(temp_path)
-        print(f"Run {run+1} completata. Miglior Val Loss (Free-Run): {early_stopping.best_loss:.6f}")
 
-    print(f"\nLa Run vincitrice è la numero {best_run_idx} con Loss: {best_overall_val_loss:.6f}")
-
-    # =====================================================================
-    # 3. TEST FINALE E METRICHE
-    # =====================================================================
-    print("\n" + "="*70)
-    print("CALCOLO METRICHE FINALI IN PURO FREE-RUN (CLOSED-LOOP)...")
+    print(f"\nRun migliore: {best_run_idx} con Loss: {best_overall_val_loss:.6f}")
     
+    #Calcolo metriche
     model.load_state_dict(torch.load(FINAL_MODEL_PATH))
     model.eval()
 
@@ -222,7 +208,6 @@ if __name__ == "__main__":
             u_seq_val, y_init_val = u_seq_val.to(DEVICE), y_init_val.to(DEVICE)
             preds_seq_val = model(u_seq_val, y_init_val, teacher_forcing_ratio=0.0)
             
-            # Estraiamo il 120esimo passo (il più difficile da indovinare!)
             all_preds_120.append(preds_seq_val[:, -1, :].cpu().numpy())
             all_targets_120.append(y_target_seq_val[:, -1, :].cpu().numpy())
 
@@ -234,7 +219,7 @@ if __name__ == "__main__":
 
     nrmse_vals, r2_vals, bfr_vals = calculate_metrics(all_targets_denorm, all_preds_denorm)
 
-    print("\nRISULTATI TEST FREE-RUN ROBUSTO (Modello Vincitore)")
+    print("\nRISULTATI")
     for i in range(6):
         print(f"Giunto {i+1}: NRMSE = {nrmse_vals[i]:.4f} | R2 = {r2_vals[i]:.2f}% | BFR = {bfr_vals[i]:.2f}%")
     print("-" * 70)
@@ -243,9 +228,7 @@ if __name__ == "__main__":
     print(f"MEDIA BFR    : {np.mean(bfr_vals):.2f}%")
     print("="*70)
 
-    # =====================================================================
-    # 4. GRAFICO DELLA RUN VINCITRICE
-    # =====================================================================
+    #Grafici
     plt.figure(figsize=(10, 6))
     plt.plot(best_train_history, label='Training Loss (Mixed)', color='#1f77b4', linewidth=2)
     plt.plot(best_val_history, label='Validation Loss (Pure Free-Run)', color='#ff7f0e', linewidth=2)
