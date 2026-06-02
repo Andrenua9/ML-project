@@ -7,14 +7,14 @@ from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-#Best fit rate calculation function
+# Calcolo della metrica Best Fit Rate (BFR)
 def calculate_bfr(y_true, y_pred):
     numerator = np.linalg.norm(y_true - y_pred)
     denominator = np.linalg.norm(y_true - np.mean(y_true))
     return (1 - (numerator / denominator)) * 100
 
-#Data preprocessing function
-def prepare_inverse_data(mat_path, seq_len=50):
+# Caricamento e preprocessing dei dati per il task inverso
+def prepare_inverse_data(mat_path, seq_len=120):
     data = scipy.io.loadmat(mat_path)
     X_train_raw, y_train_raw = data['u_train'].T, data['y_train'].T
     X_test_raw, y_test_raw = data['u_test'].T, data['y_test'].T
@@ -38,7 +38,7 @@ def prepare_inverse_data(mat_path, seq_len=50):
     return tX, ty, vX, vy, scaler_y
 
 
-#Class definition for the GRU network architecture
+# Definizione dell'architettura di rete GRU
 class RobotGRU(nn.Module):
     def __init__(self, input_dim=18, hidden_dim=64, output_dim=6, n_layers=3):
         super(RobotGRU, self).__init__()
@@ -50,7 +50,7 @@ class RobotGRU(nn.Module):
         return self.fc(out[:, -1, :])
 
 
-#Network and training configuration
+# Configurazione parametri e iperparametri
 FILE_PATH = r'Robot_Identification_Benchmark_Without_Raw_Data\inverse_identification_without_raw_data.mat'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 SEQ_LEN, BATCH_SIZE, EPOCHS = 120, 128, 200
@@ -59,7 +59,7 @@ PATIENCE = 20
 MODEL_NAME = f"robot_inverse_gru_h{HIDDEN_DIM}_l{N_LAYERS}.pth"
 LOG_FILENAME = "training_log_inverse.txt"
 
-
+# Inizializzazione DataLoader
 tX, ty, vX, vy, scaler_y = prepare_inverse_data(FILE_PATH, SEQ_LEN)
 train_loader = DataLoader(TensorDataset(tX, ty), batch_size=BATCH_SIZE, shuffle=True) 
 val_loader = DataLoader(TensorDataset(vX, vy), batch_size=BATCH_SIZE, shuffle=False)
@@ -68,13 +68,13 @@ model = RobotGRU(input_dim=18, hidden_dim=HIDDEN_DIM, output_dim=6, n_layers=N_L
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.MSELoss()
 
-
 best_val_loss = float('inf')
 epochs_without_improvement = 0
 start_time = time.time()
 
-print(f"Starting training on {DEVICE}...")
+print(f"Inizio addestramento su {DEVICE}...")
 
+# Loop di addestramento principale
 for epoch in range(EPOCHS):
     model.train()
     train_loss = 0
@@ -100,8 +100,9 @@ for epoch in range(EPOCHS):
     avg_val_loss = val_loss / len(val_loader)
 
     if (epoch + 1) % 10 == 0:
-        print(f"Epoch [{epoch+1}/{EPOCHS}] - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}")
+        print(f"Epoca [{epoch+1}/{EPOCHS}] - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}")
 
+    # Logica di Early Stopping e salvataggio dei pesi ottimi
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
         epochs_without_improvement = 0
@@ -113,10 +114,11 @@ for epoch in range(EPOCHS):
         print(f"Early stopping attivato all'epoca {epoch+1}. Miglior Val Loss: {best_val_loss:.6f}")
         break
 
+# Caricamento del modello ottimale salvato
 model.load_state_dict(torch.load(MODEL_NAME))
 train_time_min = (time.time() - start_time) / 60
 
-#Metrics computation on the best model
+# Calcolo delle metriche di performance finali
 model.eval()
 with torch.no_grad():
     raw_pred = model(vX.to(DEVICE)).cpu().numpy()
@@ -126,12 +128,12 @@ with torch.no_grad():
 bfr_results = []
 r2_results = []
 
-#Loggin results on file and console
+# Scrittura dei log su file e terminale
 with open(LOG_FILENAME, "a") as f:
     header = (f"\n{'='*60}\n"
-              f"SESSION: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-              f"Model: {MODEL_NAME} | Time: {train_time_min:.2f} min\n"
-              f"Config: Hidden={HIDDEN_DIM}, Layers={N_LAYERS}, Seq={SEQ_LEN}, Best Val Loss={best_val_loss:.6f}\n"
+              f"SESSIONE: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+              f"Modello: {MODEL_NAME} | Tempo: {train_time_min:.2f} min\n"
+              f"Config: Hidden={HIDDEN_DIM}, Layers={N_LAYERS}, Seq={SEQ_LEN}, Miglior Val Loss={best_val_loss:.6f}\n"
               f"{'-'*60}\n")
     f.write(header)
     print(header)
@@ -147,13 +149,13 @@ with open(LOG_FILENAME, "a") as f:
 
         sigma = np.std(y_true[:, i])
         nrmse = np.sqrt(np.mean((y_true[:, i] - y_pred[:, i])**2)) / sigma
-        res_line = f"Joint {i+1} | BFR: {bfr:6.2f}% | NRMSE: {nrmse:.4f} | R2: {r2_results[i]:.2f}%\n"
+        res_line = f"Giunto {i+1} | BFR: {bfr:6.2f}% | NRMSE: {nrmse:.4f} | R2: {r2_results[i]:.2f}%\n"
         f.write(res_line)
         print(res_line, end="")
 
     avg_bfr = np.mean(bfr_results)
     avg_r2 = np.mean(r2_results)
 
-    footer = f"{'-'*60}\nTotal BFR mean: {avg_bfr:.2f}%\n{'='*60}\nTotal R2 mean: {avg_r2:.2f}%\n"
+    footer = f"{'-'*60}\nMedia Totale BFR: {avg_bfr:.2f}%\n{'='*60}\nMedia Totale R2: {avg_r2:.2f}%\n"
     f.write(footer)
-    print(f"\nTotal Average BFR Inverse: {avg_bfr:.2f}%\nTotal Average R2 Inverse: {avg_r2:.2f}%\n")
+    print(f"\nMedia Complessiva BFR Task Inverso: {avg_bfr:.2f}%\nMedia Complessiva R2 Task Inverso: {avg_r2:.2f}%\n")

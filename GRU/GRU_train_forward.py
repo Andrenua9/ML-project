@@ -8,7 +8,7 @@ from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 
-#Class definition for early stopping mechanism
+# Meccanismo di Early Stopping
 class EarlyStopping:
     def __init__(self, patience=25, min_delta=1e-5, path='best_model.pth'):
         self.patience = patience
@@ -35,16 +35,14 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.path)
 
 
-#Class definition for the GRU network architecture
+# Architettura della rete GRU
 class RobotGRU(nn.Module):
     def __init__(self, input_dim=6, hidden_dim=32, output_dim=6):
         super(RobotGRU, self).__init__()
         self.gru = nn.GRU(input_dim, hidden_dim, num_layers=1, batch_first=True)
-        
         self.fc1 = nn.Linear(hidden_dim, hidden_dim)
         self.tanh = nn.Tanh()
         self.fc2 = nn.Linear(hidden_dim, output_dim)
-        
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -69,7 +67,7 @@ class RobotGRU(nn.Module):
         return self.fc2(out)
 
 
-#Data loading and preprocessing
+# Caricamento e preprocessing dei dati (.mat)
 def prepare_benchmark_data(mat_path, seq_len):
     data = scipy.io.loadmat(mat_path)
     u_all = data['u_train'].T
@@ -89,14 +87,14 @@ def prepare_benchmark_data(mat_path, seq_len):
         return torch.tensor(np.array(Xs), dtype=torch.float32), \
                torch.tensor(np.array(ys), dtype=torch.float32)
 
-
     split_idx = int(len(u_s) * 0.8)
     tX, ty = create_sequences(u_s[:split_idx], y_s[:split_idx], seq_len)
     vX, vy = create_sequences(u_s[split_idx:], y_s[split_idx:], seq_len)
     
     return tX, ty, vX, vy, scaler_y
 
-#Network and training configuration
+
+# Configurazione iperparametri
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 SEQ_LEN = 120
 HIDDEN_DIM = 64
@@ -107,7 +105,7 @@ PATIENCE = 40
 DATA_FILE = r'Robot_Identification_Benchmark_Without_Raw_Data\forward_identification_without_raw_data.mat'
 LOG_FILE = "training_log.txt"
 
-#Multi-start training loop
+# Inizializzazione DataLoader
 tX, ty, vX, vy, scaler_y = prepare_benchmark_data(DATA_FILE, SEQ_LEN)
 train_loader = DataLoader(TensorDataset(tX, ty), batch_size=128, shuffle=True)
 val_loader = DataLoader(TensorDataset(vX, vy), batch_size=128, shuffle=False)
@@ -115,13 +113,13 @@ val_loader = DataLoader(TensorDataset(vX, vy), batch_size=128, shuffle=False)
 best_overall_val_loss = float('inf')
 final_model_path = f"best_of_{NUM_RESTARTS}_runs.pth"
 
-print(f"Starting Multi-start session ({NUM_RESTARTS} initializations) on {DEVICE}")
+print(f"Avvio sessione Multi-start ({NUM_RESTARTS} inizializzazioni) su {DEVICE}")
 
-#Log initialization
 with open(LOG_FILE, "w") as log_f:
-    log_f.write(f"{datetime.now()} - Multi-start session ({NUM_RESTARTS} initializations) on {DEVICE}\n")
-    log_f.write(f"Configuration: SEQ_LEN={SEQ_LEN}, HIDDEN_DIM={HIDDEN_DIM}, LR={LR}, EPOCHS={EPOCHS}\n\n")
+    log_f.write(f"{datetime.now()} - Sessione Multi-start ({NUM_RESTARTS} inizializzazioni) avviata su {DEVICE}\n")
+    log_f.write(f"Configurazione: SEQ_LEN={SEQ_LEN}, HIDDEN_DIM={HIDDEN_DIM}, LR={LR}, EPOCHS={EPOCHS}\n\n")
 
+# Loop principale Multi-start
 for run in range(NUM_RESTARTS):
     run_start_time = time.time()
     model = RobotGRU(6, HIDDEN_DIM, 6).to(DEVICE)
@@ -147,18 +145,19 @@ for run in range(NUM_RESTARTS):
         
         avg_v = val_loss / len(val_loader)
         early_stopping(avg_v, model)
-        if early_stopping.early_stop: break
+        if early_stopping.early_stop: 
+            break
  
     if early_stopping.best_loss < best_overall_val_loss:
         best_overall_val_loss = early_stopping.best_loss
         torch.save(model.state_dict(), final_model_path)
     
-    print(f"Run {run+1}/{NUM_RESTARTS}. Best Val Loss: {early_stopping.best_loss:.6f}")
+    print(f"Run {run+1}/{NUM_RESTARTS}. Migliore Val Loss: {early_stopping.best_loss:.6f}")
     with open(LOG_FILE, "a") as log_f:
-        log_f.write(f"{datetime.now()} - Run {run+1}/{NUM_RESTARTS} - Best Val Loss: {early_stopping.best_loss:.6f} - Time: {time.time() - run_start_time:.2f}s\n")
+        log_f.write(f"{datetime.now()} - Run {run+1}/{NUM_RESTARTS} - Migliore Val Loss: {early_stopping.best_loss:.6f} - Time: {time.time() - run_start_time:.2f}s\n")
         
 
-#Metrics computation on the best model
+# Calcolo metriche finali (R2, BFR, NRMSE) sul modello migliore
 model.load_state_dict(torch.load(final_model_path))
 model.eval()
 with torch.no_grad():
@@ -169,15 +168,32 @@ with torch.no_grad():
     y_true = scaler_y.inverse_transform(y_true_s)
     
     r2_all = []
-    print("\n--- Result R2 Joint ---")
+    bfr_all = []
+    nrmse_all = []
+    
+    print("\n--- Risultati Metriche per Giunto ---")
     for n in range(y_true.shape[1]):
+        # R2
         res_ss = np.sum((y_true[:, n] - y_pred[:, n])**2)
         tot_ss = np.sum((y_true[:, n] - np.mean(y_true[:, n]))**2)
-        
         r2 = 100 * (1 - (res_ss / tot_ss))
         r2_all.append(r2)
-        print(f"Joint {n+1}: R2 = {r2:.2f}%")
+        
+        # BFR
+        numerator_bfr = np.linalg.norm(y_true[:, n] - y_pred[:, n])
+        denominator_bfr = np.linalg.norm(y_true[:, n] - np.mean(y_true[:, n]))
+        bfr = (1 - (numerator_bfr / denominator_bfr)) * 100
+        bfr_all.append(bfr)
+        
+        # NRMSE (normalizzato rispetto alla deviazione standard)
+        sigma = np.std(y_true[:, n])
+        nrmse = np.sqrt(np.mean((y_true[:, n] - y_pred[:, n])**2)) / sigma
+        nrmse_all.append(nrmse)
+        
+        print(f"Giunto {n+1} | R2: {r2:.2f}% | BFR: {bfr:.2f}% | NRMSE: {nrmse:.4f}")
 
-# Calcolo della media totale
-r2_mean = np.mean(r2_all)
-print(f"\nTotal R2 mean: {r2_mean:.2f}%")
+# Calcolo medie globali della sessione
+print(f"\n--- Medie Complessive Task Diretto ---")
+print(f"Media R2: {np.mean(r2_all):.2f}%")
+print(f"Media BFR: {np.mean(bfr_all):.2f}%")
+print(f"Media NRMSE: {np.mean(nrmse_all):.4f}")
