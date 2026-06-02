@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
     PATH_FORWARD = '/kaggle/input/datasets/contemarco/forwardandinverse/forward_identification_without_raw_data.mat'
     PATH_INVERSE = '/kaggle/input/datasets/contemarco/forwardandinverse/inverse_identification_without_raw_data.mat'
-    FINAL_MODEL_PATH = f"/kaggle/working/BEST_ROBUST_FREERUN_{TASK}.pth"
+    FINAL_MODEL_PATH = f"/kaggle/working/BEST_NNARX_{TASK}.pth"
 
     if TASK == 'FORWARD': 
         mat_data = sio.loadmat(PATH_FORWARD)
